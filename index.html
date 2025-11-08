@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>RGB Camera Color Picker</title>
+<style>
+  :root { --bg:#0b0d10; --fg:#e6e8eb; --muted:#8b939e; --card:#12161b; --border:#1e242b; }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  body{margin:0;background:var(--bg);color:var(--fg);font:500 16px/1.5 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  header{padding:14px 16px;border-bottom:1px solid var(--border)}
+  header h1{margin:0;font-size:18px}
+  main{display:grid;gap:12px;padding:12px}
+  .view{position:relative;border-radius:16px;overflow:hidden;background:#000;box-shadow:0 10px 30px rgba(0,0,0,.4);min-height:40vh}
+  video{width:100%;height:auto;display:block;transform:scaleX(-1);} /* mirror */
+  canvas{display:none}
+  .panel{display:grid;gap:10px;grid-template-columns:1fr}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:12px}
+  .swatch{height:56px;border-radius:12px;border:1px solid var(--border)}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted)}
+  .val{font-weight:700;color:var(--fg);word-break:break-all}
+  .btns{display:flex;gap:10px;flex-wrap:wrap}
+  button{
+    appearance:none;border:1px solid #2a323b;background:#1a2027;color:#e6e8eb;
+    padding:12px 14px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px;
+  }
+  button:active{transform:translateY(1px)}
+  .small{font-size:13px;color:var(--muted)}
+  .target {
+    position:absolute; width:90px; height:90px; border:2px solid rgba(255,255,255,.85);
+    border-radius:12px; pointer-events:auto; touch-action:none; /* enable dragging */
+    transform:translate(-50%,-50%); backdrop-filter: saturate(120%) brightness(105%);
+  }
+  .target-dot{
+    position:absolute; left:50%; top:50%; width:6px; height:6px; border-radius:50%;
+    background:#fff; transform:translate(-50%,-50%); box-shadow:0 0 0 4px rgba(0,0,0,.5);
+  }
+  footer{padding:8px 16px;color:var(--muted)}
+  @media (min-width:900px){
+    main{grid-template-columns:1.2fr .8fr}
+    .panel{position:sticky;top:10px;height:max-content}
+  }
+  @media (max-width:480px){
+    .grid{grid-template-columns:1fr}
+    .swatch{height:64px}
+    button{padding:12px 16px;font-size:16px}
+  }
+</style>
+</head>
+<body>
+  <header><h1>Nhận diện màu RGB qua camera</h1></header>
+  <main>
+    <section class="view" id="view">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="canvas"></canvas>
+
+      <!-- Dấu ngắm kéo thả -->
+      <div id="target" class="target" aria-label="Điểm lấy mẫu">
+        <div class="target-dot"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="card">
+        <div class="swatch" id="swatch"></div>
+        <div class="grid" style="margin-top:10px">
+          <div class="row"><span>RGB</span><span class="val" id="rgb">—</span></div>
+          <div class="row"><span>HEX</span><span class="val" id="hex">—</span></div>
+          <div class="row"><span>HSL</span><span class="val" id="hsl">—</span></div>
+          <div class="row"><span>Tên gần đúng</span><span class="val" id="name">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="btns">
+          <button id="toggle">Tạm dừng</button>
+          <button id="lock">Khóa màu</button>
+          <button id="reset">Đưa về giữa</button>
+          <button id="copyHex">Copy HEX</button>
+          <button id="copyRgb">Copy RGB</button>
+          <button id="flip">Đổi camera</button>
+          <button id="save">Lưu vào Google Sheet</button>
+        </div>
+        <div class="small" style="margin-top:8px">
+          Kéo ô vuông đến vị trí muốn đo. App lấy <b>trung bình 9×9 pixel</b> quanh chấm giữa để giảm nhiễu.
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer>Tip: ánh sáng đều giúp kết quả ổn định hơn.</footer>
+
+<script>
+  // ====== CẤU HÌNH: DÁN URL Web App của Apps Script vào đây ======
+  const SHEET_WEB_APP_URL = "https://script.google.com/a/macros/aiotlab.vn/s/AKfycbySNKWZxmlN8NC3gI8AikeItSMw4Wv0ORfQIvlMAPc/dev";
+  // ================================================================
+
+  const video = document.getElementById('video');
+  const view = document.getElementById('view');
+  const target = document.getElementById('target');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  const swatch = document.getElementById('swatch');
+  const rgbEl = document.getElementById('rgb');
+  const hexEl = document.getElementById('hex');
+  const hslEl = document.getElementById('hsl');
+  const nameEl = document.getElementById('name');
+
+  const btnToggle = document.getElementById('toggle');
+  const btnLock = document.getElementById('lock');
+  const btnCopyHex = document.getElementById('copyHex');
+  const btnCopyRgb = document.getElementById('copyRgb');
+  const btnFlip = document.getElementById('flip');
+  const btnReset = document.getElementById('reset');
+  const btnSave = document.getElementById('save');
+
+  let stream = null;
+  let paused = false;
+  let locked = false;
+  let usingBack = true;
+  let rafId = null;
+
+  // Vị trí lấy mẫu dạng tỷ lệ (0..1) theo video
+  let pos = { x: 0.5, y: 0.5 };
+
+  // CSS color list (đủ dùng để đặt tên gần đúng)
+  const cssColors = {
+    "black":[0,0,0], "white":[255,255,255], "red":[255,0,0], "green":[0,128,0], "blue":[0,0,255],
+    "yellow":[255,255,0], "cyan":[0,255,255], "magenta":[255,0,255],
+    "gray":[128,128,128], "orange":[255,165,0], "pink":[255,192,203],
+    "purple":[128,0,128], "brown":[165,42,42], "navy":[0,0,128],
+    "teal":[0,128,128], "olive":[128,128,0], "maroon":[128,0,0],
+    "silver":[192,192,192], "lime":[0,255,0], "indigo":[75,0,130]
+  };
+  const colorKeys = Object.keys(cssColors);
+  const dist2=(a,b,c,x,y,z)=>{const dx=a-x,dy=b-y,dz=c-z;return dx*dx+dy*dy+dz*dz;};
+  function nearestName(r,g,b){
+    let best="—",dmin=1e12;
+    for(const k of colorKeys){ const [x,y,z]=cssColors[k]; const d=dist2(r,g,b,x,y,z); if(d<dmin){dmin=d; best=k;} }
+    return best;
+  }
+  const toHex = n => n.toString(16).padStart(2,'0');
+  const rgb2hex = (r,g,b) => `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  function rgb2hsl(r,g,b){
+    r/=255; g/=255; b/=255;
+    const max=Math.max(r,g,b), min=Math.min(r,g,b);
+    let h,s,l=(max+min)/2;
+    if(max===min){ h=s=0; }
+    else{
+      const d=max-min;
+      s=l>0.5? d/(2-max-min) : d/(max+min);
+      switch(max){ case r: h=(g-b)/d + (g<b?6:0); break;
+                    case g: h=(b-r)/d + 2; break;
+                    case b: h=(r-g)/d + 4; break; }
+      h/=6;
+    }
+    return `hsl(${Math.round(h*360)}, ${Math.round(s*100)}%, ${Math.round(l*100)}%)`;
+  }
+
+  async function startCamera(){
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode: usingBack ? { exact:"environment" } : "user", width:{ideal:1280}, height:{ideal:720} },
+        audio:false
+      });
+    }catch(e){
+      stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+    }
+    video.srcObject = stream;
+    await video.play();
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    layoutTarget(); // đặt target đúng vị trí hiện tại
+    loop();
+  }
+
+  function sampleAt(nx, ny, avgSize=9){
+    const x = Math.max(0, Math.min(canvas.width-1, Math.round(nx * canvas.width)));
+    const y = Math.max(0, Math.min(canvas.height-1, Math.round(ny * canvas.height)));
+    const half = Math.floor(avgSize/2);
+    const sx = Math.max(0, Math.min(canvas.width - avgSize, x - half));
+    const sy = Math.max(0, Math.min(canvas.height - avgSize, y - half));
+    const img = ctx.getImageData(sx, sy, avgSize, avgSize).data;
+    let r=0,g=0,b=0,n=0;
+    for(let i=0;i<img.length;i+=4){ r+=img[i]; g+=img[i+1]; b+=img[i+2]; n++; }
+    r=Math.round(r/n); g=Math.round(g/n); b=Math.round(b/n);
+    return {r,g,b};
+  }
+
+  function render(){
+    if(!paused && !locked){
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const {r,g,b} = sampleAt(pos.x, pos.y, 9);
+      const hex = rgb2hex(r,g,b).toUpperCase();
+      const hsl = rgb2hsl(r,g,b);
+      const name = nearestName(r,g,b);
+      swatch.style.background = hex;
+      rgbEl.textContent = `rgb(${r}, ${g}, ${b})`;
+      hexEl.textContent = hex;
+      hslEl.textContent = hsl;
+      nameEl.textContent = name;
+    }
+  }
+
+  function loop(){
+    cancelAnimationFrame(rafId);
+    const tick = () => { render(); rafId = requestAnimationFrame(tick); };
+    rafId = requestAnimationFrame(tick);
+  }
+
+  // ====== Điều khiển ======
+  btnToggle.onclick = () => { paused=!paused; btnToggle.textContent = paused ? "Tiếp tục" : "Tạm dừng"; };
+  btnLock.onclick = () => { locked=!locked; btnLock.textContent = locked ? "Mở khóa màu" : "Khóa màu"; };
+  btnCopyHex.onclick = () => navigator.clipboard.writeText(hexEl.textContent);
+  btnCopyRgb.onclick = () => navigator.clipboard.writeText(rgbEl.textContent);
+  btnFlip.onclick = async () => { usingBack=!usingBack; await startCamera(); };
+  btnReset.onclick = () => { pos = {x:0.5, y:0.5}; layoutTarget(); };
+
+  // Lưu vào Google Sheet (cột A: Thời gian, cột B: Màu ghi nhận)
+  btnSave.onclick = async () => {
+    const hex = hexEl.textContent;
+    if(!hex || !/^#?[0-9A-F]{6}$/i.test(hex)) {
+      alert("Chưa có màu để lưu.");
+      return;
+    }
+    const now = new Date();
+    const timeVN = now.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    try{
+      if(!SHEET_WEB_APP_URL || SHEET_WEB_APP_URL.startsWith("REPLACE_")){
+        alert("Bạn chưa cấu hình URL Web App của Google Apps Script.");
+        return;
+      }
+      const resp = await fetch(SHEET_WEB_APP_URL, {
+        method: "POST",
+        mode: "cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ time: timeVN, color: hex.toUpperCase() })
+      });
+      const data = await resp.json().catch(()=> ({}));
+      if(resp.ok){
+        alert("Đã lưu vào Google Sheet!");
+      }else{
+        alert("Lỗi lưu dữ liệu: " + (data.error || resp.status));
+      }
+    }catch(e){
+      alert("Không thể kết nối Web App: " + e.message);
+    }
+  };
+
+  // ====== Kéo thả target ======
+  function layoutTarget(){
+    const rect = view.getBoundingClientRect();
+    const left = pos.x * rect.width;
+    const top  = pos.y * rect.height;
+    target.style.left = left + "px";
+    target.style.top  = top  + "px";
+  }
+
+  let dragging = false;
+  const startDrag = (clientX, clientY) => {
+    dragging = true;
+    moveDrag(clientX, clientY);
+  };
+  const moveDrag = (clientX, clientY) => {
+    if(!dragging) return;
+    const rect = view.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+    pos.x = x / rect.width;
+    pos.y = y / rect.height;
+    layoutTarget();
+  };
+  const endDrag = () => dragging = false;
+
+  // Mouse
+  target.addEventListener('mousedown', e => { e.preventDefault(); startDrag(e.clientX, e.clientY); });
+  window.addEventListener('mousemove', e => moveDrag(e.clientX, e.clientY));
+  window.addEventListener('mouseup', endDrag);
+
+  // Touch
+  target.addEventListener('touchstart', e => {
+    const t = e.touches[0]; startDrag(t.clientX, t.clientY);
+  }, {passive:false});
+  window.addEventListener('touchmove', e => {
+    const t = e.touches[0]; if(t) moveDrag(t.clientX, t.clientY);
+  }, {passive:false});
+  window.addEventListener('touchend', endDrag);
+  window.addEventListener('resize', layoutTarget);
+
+  // ====== Khởi động ======
+  (async () => {
+    if(!navigator.mediaDevices?.getUserMedia){
+      alert("Trình duyệt không hỗ trợ camera.");
+      return;
+    }
+    await startCamera();
+  })();
+</script>
+</body>
+</html>
