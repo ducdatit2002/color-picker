@@ -1,5 +1,5 @@
 [[redirects]]
   from = "/api/save"
-  to = "https://script.google.com/macros/s/AKfycby3h6NJJGTNwo-AvxHVauAAVLO_fvipjPyzRWzqW37ZQWzzeYmm69Mny8A7lH0aZfm3/exec"
+  to = "https://script.google.com/macros/s/AKfycbxyK6hMBzO_yEDNc2ko_eezK-psZwGPdCtRBxaz7SALpzzwqpGS_lAp0FXKIa3bdcyN/exec"
   status = 200
   force = true
