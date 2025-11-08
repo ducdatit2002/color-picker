@@ -11,22 +11,39 @@
   header{padding:14px 16px;border-bottom:1px solid var(--border)}
   header h1{margin:0;font-size:18px}
   main{display:grid;gap:12px;padding:12px}
-  .view{position:relative;border-radius:16px;overflow:hidden;background:#000;box-shadow:0 10px 30px rgba(0,0,0,.4);min-height:40vh}
-  video{width:100%;height:auto;display:block;transform:scaleX(-1);}
-  canvas{display:none}
+
+  /* View: gọn gàng trên điện thoại */
+  .view{
+    position:relative;border-radius:16px;overflow:hidden;background:#000;
+    box-shadow:0 10px 30px rgba(0,0,0,.4);
+    aspect-ratio: 3 / 4;          /* khung đứng 3:4 */
+    max-height:60vh;              /* không quá 60% màn hình */
+    min-height:320px;
+  }
+  /* Video/canvas lấp đầy khung, cover cho vừa */
+  video, canvas{
+    position:absolute; inset:0; width:100%; height:100%;
+    object-fit:cover; display:block;
+  }
+  video{ transform:scaleX(-1); }  /* mirror để dễ canh */
+  canvas{ display:none; }         /* chỉ hiện khi chụp/ảnh */
+
   .panel{display:grid;gap:10px;grid-template-columns:1fr}
   .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:12px}
   .swatch{height:56px;border-radius:12px;border:1px solid var(--border)}
   .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
   .row{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted)}
   .val{font-weight:700;color:var(--fg);word-break:break-all}
+
   .btns{display:flex;gap:10px;flex-wrap:wrap}
-  button{
+  button,label.button{
     appearance:none;border:1px solid #2a323b;background:#1a2027;color:#e6e8eb;
     padding:12px 14px;border-radius:12px;font-weight:700;cursor:pointer;font-size:15px;
   }
-  button:active{transform:translateY(1px)}
+  button:active,label.button:active{transform:translateY(1px)}
+  input[type="file"]{display:none}
   .small{font-size:13px;color:var(--muted)}
+
   .target {
     position:absolute; width:90px; height:90px; border:2px solid rgba(255,255,255,.85);
     border-radius:12px; pointer-events:auto; touch-action:none;
@@ -36,6 +53,7 @@
     position:absolute; left:50%; top:50%; width:6px; height:6px; border-radius:50%;
     background:#fff; transform:translate(-50%,-50%); box-shadow:0 0 0 4px rgba(0,0,0,.5);
   }
+
   footer{padding:8px 16px;color:var(--muted)}
   @media (min-width:900px){
     main{grid-template-columns:1.2fr .8fr}
@@ -44,7 +62,7 @@
   @media (max-width:480px){
     .grid{grid-template-columns:1fr}
     .swatch{height:64px}
-    button{padding:12px 16px;font-size:16px}
+    button,label.button{padding:12px 16px;font-size:16px}
   }
 </style>
 </head>
@@ -55,6 +73,7 @@
       <video id="video" autoplay playsinline></video>
       <canvas id="canvas"></canvas>
 
+      <!-- Dấu ngắm kéo thả -->
       <div id="target" class="target" aria-label="Điểm lấy mẫu">
         <div class="target-dot"></div>
       </div>
@@ -76,6 +95,10 @@
           <button id="toggle">Tạm dừng</button>
           <button id="lock">Khóa màu</button>
           <button id="reset">Đưa về giữa</button>
+          <button id="capture">Chụp</button>
+          <button id="resume" style="display:none">Mở lại camera</button>
+          <label class="button" for="fileInput">Tải ảnh</label>
+          <input id="fileInput" type="file" accept="image/*" />
           <button id="copyHex">Copy HEX</button>
           <button id="copyRgb">Copy RGB</button>
           <button id="flip">Đổi camera</button>
@@ -90,8 +113,10 @@
   <footer>Tip: ánh sáng đều giúp kết quả ổn định hơn.</footer>
 
 <script>
+  // ====== Endpoint lưu (proxy Netlify tới Apps Script /exec) ======
   const SAVE_ENDPOINT = "/api/save";
 
+  // ====== Elements ======
   const video = document.getElementById('video');
   const view = document.getElementById('view');
   const target = document.getElementById('target');
@@ -111,10 +136,16 @@
   const btnFlip = document.getElementById('flip');
   const btnReset = document.getElementById('reset');
   const btnSave = document.getElementById('save');
+  const btnCapture = document.getElementById('capture');
+  const btnResume = document.getElementById('resume');
+  const fileInput = document.getElementById('fileInput');
 
+  // ====== State ======
   let stream = null, paused = false, locked = false, usingBack = true, rafId = null;
-  let pos = { x: 0.5, y: 0.5 };
+  let pos = { x: 0.5, y: 0.5 };        // vị trí dấu ngắm (0..1)
+  let mode = 'camera';                  // 'camera' | 'snapshot' | 'image'
 
+  // ====== Color helpers ======
   const cssColors = {
     "black":[0,0,0], "white":[255,255,255], "red":[255,0,0], "green":[0,128,0], "blue":[0,0,255],
     "yellow":[255,255,0], "cyan":[0,255,255], "magenta":[255,0,255],
@@ -148,6 +179,21 @@
     return `hsl(${Math.round(h*360)}, ${Math.round(s*100)}%, ${Math.round(l*100)}%)`;
   }
 
+  // ====== Mode switch ======
+  function setMode(m){
+    mode = m;
+    if (mode === 'camera'){
+      video.style.display = 'block';
+      canvas.style.display = 'none';
+      btnResume.style.display = 'none';
+    } else {
+      video.style.display = 'none';
+      canvas.style.display = 'block';
+      btnResume.style.display = 'inline-block';
+    }
+  }
+
+  // ====== Camera ======
   async function startCamera(){
     if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
     try{
@@ -160,12 +206,29 @@
     }
     video.srcObject = stream;
     await video.play();
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    canvas.width  = vw;
+    canvas.height = vh;
+
+    setMode('camera');
     layoutTarget();
     loop();
   }
+  function stopCamera(){
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  }
 
+  // ====== Draw helpers ======
+  function drawVideoToCanvasMirrored(){
+    ctx.save();
+    ctx.scale(-1,1);
+    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  // ====== Sampling ======
   function sampleAt(nx, ny, avgSize=9){
     const x = Math.max(0, Math.min(canvas.width-1, Math.round(nx * canvas.width)));
     const y = Math.max(0, Math.min(canvas.height-1, Math.round(ny * canvas.height)));
@@ -180,18 +243,20 @@
   }
 
   function render(){
-    if(!paused && !locked){
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const {r,g,b} = sampleAt(pos.x, pos.y, 9);
-      const hex = rgb2hex(r,g,b).toUpperCase();
-      const hsl = rgb2hsl(r,g,b);
-      const name = nearestName(r,g,b);
-      swatch.style.background = hex;
-      rgbEl.textContent = `rgb(${r}, ${g}, ${b})`;
-      hexEl.textContent = hex;
-      hslEl.textContent = hsl;
-      nameEl.textContent = name;
+    // Khi ở camera: mỗi frame vẽ vào canvas (mirrored) trừ khi paused/locked
+    if(mode === 'camera' && !paused && !locked){
+      drawVideoToCanvasMirrored();
     }
+    // Đọc màu từ canvas (camera/ảnh/snapshot đều dùng cùng pipeline)
+    const {r,g,b} = sampleAt(pos.x, pos.y, 9);
+    const hex = rgb2hex(r,g,b).toUpperCase();
+    const hsl = rgb2hsl(r,g,b);
+    const name = nearestName(r,g,b);
+    swatch.style.background = hex;
+    rgbEl.textContent = `rgb(${r}, ${g}, ${b})`;
+    hexEl.textContent = hex;
+    hslEl.textContent = hsl;
+    nameEl.textContent = name;
   }
 
   function loop(){
@@ -200,19 +265,54 @@
     rafId = requestAnimationFrame(tick);
   }
 
-  // —— Nút bấm
+  // ====== Controls ======
   btnToggle.onclick = () => { paused=!paused; btnToggle.textContent = paused ? "Tiếp tục" : "Tạm dừng"; };
-  btnLock.onclick = () => { locked=!locked; btnLock.textContent = locked ? "Mở khóa màu" : "Khóa màu"; };
-  btnCopyHex.onclick = () => navigator.clipboard.writeText(hexEl.textContent);
-  btnCopyRgb.onclick = () => navigator.clipboard.writeText(rgbEl.textContent);
-  btnFlip.onclick = async () => { usingBack=!usingBack; await startCamera(); };
-  btnReset.onclick = () => { pos = {x:0.5, y:0.5}; layoutTarget(); };
+  btnLock.onclick   = () => { locked=!locked; btnLock.textContent   = locked ? "Mở khóa màu" : "Khóa màu"; };
+  btnCopyHex.onclick= () => navigator.clipboard.writeText(hexEl.textContent);
+  btnCopyRgb.onclick= () => navigator.clipboard.writeText(rgbEl.textContent);
+  btnFlip.onclick   = async () => { usingBack=!usingBack; await startCamera(); };
+  btnReset.onclick  = () => { pos = {x:0.5, y:0.5}; layoutTarget(); };
 
-  // —— Lưu: KHÔNG ép parse JSON; coi 200 là thành công, nếu có JSON thì đọc thêm
+  // Chụp (freeze khung hiện tại)
+  btnCapture.onclick = () => {
+    if (mode !== 'camera') return;
+    drawVideoToCanvasMirrored();
+    stopCamera();
+    setMode('snapshot');
+  };
+  // Mở lại camera
+  btnResume.onclick = async () => { await startCamera(); };
+
+  // Tải ảnh từ thư viện
+  fileInput.onchange = (e) => {
+    const file = e.target.files?.[0];
+    if(!file) return;
+    stopCamera();
+    const fr = new FileReader();
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        // Scale tối đa chiều dài 1280 cho nhẹ
+        const maxSide = 1280;
+        let w = img.naturalWidth, h = img.naturalHeight;
+        const scale = Math.min(1, maxSide / Math.max(w,h));
+        w = Math.round(w*scale); h = Math.round(h*scale);
+        canvas.width = w; canvas.height = h;
+        // Vẽ ảnh (KHÔNG mirror)
+        ctx.clearRect(0,0,w,h);
+        ctx.drawImage(img, 0, 0, w, h);
+        setMode('image');
+        layoutTarget();
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  };
+
+  // Lưu vào Google Sheet: A = time, B = RGB
   btnSave.onclick = async () => {
-    const hex = (hexEl.textContent || '').toUpperCase();
     const rgb = (rgbEl.textContent || '');
-    if(!/^#?[0-9A-F]{6}$/.test(hex)) { alert("Chưa có màu để lưu."); return; }
+    if(!/^rgb\(\d{1,3},\s?\d{1,3},\s?\d{1,3}\)$/.test(rgb)) { alert("Chưa có màu để lưu."); return; }
 
     const timeVN = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
     const body = new URLSearchParams({ time: timeVN, color: rgb });
@@ -221,35 +321,27 @@
       const resp = await fetch(SAVE_ENDPOINT, { method: "POST", body, redirect: "follow" });
       const ct = resp.headers.get("content-type") || "";
       const txt = await resp.text();
-
       let ok = resp.ok;
-      if (ct.includes("application/json")) {
-        try { ok = JSON.parse(txt).ok === true; } catch(_) {}
-      }
-      if (ok) {
-        alert("Đã lưu vào Google Sheet!");
-      } else {
-        alert("Lỗi lưu dữ liệu: " + resp.status + " " + txt.slice(0,180));
-      }
+      if (ct.includes("application/json")) { try { ok = JSON.parse(txt).ok === true; } catch{} }
+      if (ok) alert("Đã lưu vào Google Sheet!");
+      else alert("Lỗi lưu dữ liệu: " + resp.status + " " + txt.slice(0,180));
     }catch(e){
       alert("Không thể kết nối Web App: " + e.message);
     }
   };
 
-  // —— Kéo thả dấu ngắm
+  // ====== Drag target ======
   function layoutTarget(){
     const rect = view.getBoundingClientRect();
-    const left = pos.x * rect.width;
-    const top  = pos.y * rect.height;
-    target.style.left = left + "px";
-    target.style.top  = top  + "px";
+    target.style.left  = (pos.x * rect.width)  + "px";
+    target.style.top   = (pos.y * rect.height) + "px";
   }
   let dragging = false;
   const startDrag = (clientX, clientY) => { dragging = true; moveDrag(clientX, clientY); };
-  const moveDrag = (clientX, clientY) => {
+  const moveDrag  = (clientX, clientY) => {
     if(!dragging) return;
     const rect = view.getBoundingClientRect();
-    const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+    const x = Math.max(0, Math.min(rect.width,  clientX - rect.left));
     const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
     pos.x = x / rect.width; pos.y = y / rect.height; layoutTarget();
   };
@@ -258,11 +350,14 @@
   target.addEventListener('mousedown', e => { e.preventDefault(); startDrag(e.clientX, e.clientY); });
   window.addEventListener('mousemove', e => moveDrag(e.clientX, e.clientY));
   window.addEventListener('mouseup', endDrag);
+
   target.addEventListener('touchstart', e => { const t = e.touches[0]; startDrag(t.clientX, t.clientY); }, {passive:false});
-  window.addEventListener('touchmove', e => { const t = e.touches[0]; if(t) moveDrag(t.clientX, t.clientY); }, {passive:false});
+  window.addEventListener('touchmove',  e => { const t = e.touches[0]; if(t) moveDrag(t.clientX, t.clientY); }, {passive:false});
   window.addEventListener('touchend', endDrag);
+
   window.addEventListener('resize', layoutTarget);
 
+  // ====== Init ======
   (async () => {
     if(!navigator.mediaDevices?.getUserMedia){ alert("Trình duyệt không hỗ trợ camera."); return; }
     await startCamera();
