@@ -211,10 +211,11 @@
   // —— Lưu: KHÔNG ép parse JSON; coi 200 là thành công, nếu có JSON thì đọc thêm
   btnSave.onclick = async () => {
     const hex = (hexEl.textContent || '').toUpperCase();
+    const rgb = (rgbEl.textContent || '');
     if(!/^#?[0-9A-F]{6}$/.test(hex)) { alert("Chưa có màu để lưu."); return; }
 
     const timeVN = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-    const body = new URLSearchParams({ time: timeVN, color: hex });
+    const body = new URLSearchParams({ time: timeVN, color: rgb });
 
     try{
       const resp = await fetch(SAVE_ENDPOINT, { method: "POST", body, redirect: "follow" });
