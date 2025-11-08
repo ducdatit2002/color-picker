@@ -29,7 +29,7 @@
   .small{font-size:13px;color:var(--muted)}
   .target {
     position:absolute; width:90px; height:90px; border:2px solid rgba(255,255,255,.85);
-    border-radius:12px; pointer-events:auto; touch-action:none; /* enable dragging */
+    border-radius:12px; pointer-events:auto; touch-action:none;
     transform:translate(-50%,-50%); backdrop-filter: saturate(120%) brightness(105%);
   }
   .target-dot{
@@ -91,9 +91,8 @@
   <footer>Tip: ánh sáng đều giúp kết quả ổn định hơn.</footer>
 
 <script>
-  // ====== CẤU HÌNH: DÁN URL Web App của Apps Script vào đây ======
-  const SHEET_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzvNpZH8umpC5JyJ2agQevnaf-Ypn4Ki7SFq_38CUCfPAUhlFpt2lLQSjqJ_j3FObAC/exec";
-  // ================================================================
+  // ====== Endpoint gọi qua proxy Netlify (né CORS) ======
+  const SAVE_ENDPOINT = "/api/save"; // trỏ vào proxy ở bước 1
 
   const video = document.getElementById('video');
   const view = document.getElementById('view');
@@ -121,10 +120,9 @@
   let usingBack = true;
   let rafId = null;
 
-  // Vị trí lấy mẫu dạng tỷ lệ (0..1) theo video
+  // Vị trí lấy mẫu dạng tỷ lệ (0..1)
   let pos = { x: 0.5, y: 0.5 };
 
-  // CSS color list (đủ dùng để đặt tên gần đúng)
   const cssColors = {
     "black":[0,0,0], "white":[255,255,255], "red":[255,0,0], "green":[0,128,0], "blue":[0,0,255],
     "yellow":[255,255,0], "cyan":[0,255,255], "magenta":[255,0,255],
@@ -172,7 +170,7 @@
     await video.play();
     canvas.width = video.videoWidth || 1280;
     canvas.height = video.videoHeight || 720;
-    layoutTarget(); // đặt target đúng vị trí hiện tại
+    layoutTarget();
     loop();
   }
 
@@ -218,31 +216,36 @@
   btnFlip.onclick = async () => { usingBack=!usingBack; await startCamera(); };
   btnReset.onclick = () => { pos = {x:0.5, y:0.5}; layoutTarget(); };
 
-  // Lưu vào Google Sheet (cột A: Thời gian, cột B: Màu ghi nhận)
+  // ====== Lưu vào Sheet qua proxy Netlify ======
   btnSave.onclick = async () => {
-    const hex = hexEl.textContent;
-    if(!hex || !/^#?[0-9A-F]{6}$/i.test(hex)) {
-      alert("Chưa có màu để lưu.");
-      return;
-    }
+    const hex = (hexEl.textContent || '').toUpperCase();
+    if(!/^#?[0-9A-F]{6}$/.test(hex)) { alert("Chưa có màu để lưu."); return; }
+
     const now = new Date();
     const timeVN = now.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+
+    // Dùng form-url-encoded để vẫn "simple request"
+    const body = new URLSearchParams({ time: timeVN, color: hex });
+
     try{
-      if(!SHEET_WEB_APP_URL || SHEET_WEB_APP_URL.startsWith("REPLACE_")){
-        alert("Bạn chưa cấu hình URL Web App của Google Apps Script.");
-        return;
-      }
-      const resp = await fetch(SHEET_WEB_APP_URL, {
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 12000); // timeout 12s
+
+      const resp = await fetch(SAVE_ENDPOINT, {
         method: "POST",
-        mode: "cors",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ time: timeVN, color: hex.toUpperCase() })
+        body,
+        redirect: "follow",
+        signal: ctrl.signal
       });
-      const data = await resp.json().catch(()=> ({}));
-      if(resp.ok){
+
+      clearTimeout(t);
+      const txt = await resp.text();
+      let data; try { data = JSON.parse(txt); } catch { data = {}; }
+
+      if(resp.ok && (data?.ok || txt.includes('"ok":true'))) {
         alert("Đã lưu vào Google Sheet!");
-      }else{
-        alert("Lỗi lưu dữ liệu: " + (data.error || resp.status));
+      } else {
+        alert("Lỗi lưu dữ liệu: " + (data?.error || resp.status + ' ' + txt));
       }
     }catch(e){
       alert("Không thể kết nối Web App: " + e.message);
